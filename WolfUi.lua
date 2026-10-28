@@ -815,21 +815,51 @@ local function iconLabel(parent, names, x, y, size, color, fallback)
     return api
 end
 
+-- Palette slots: 1 window, 2 panel, 3 muted text, 4 control, 5 control hover / stroke,
+-- 6 strong stroke, 7 foreground text. Each theme also carries its default accent.
+local THEME_SLOTS = 7
 local themes = {
-    {{17, 18, 24}, {26, 28, 37}, {132, 138, 158}, {35, 38, 50}, {54, 58, 76}, {70, 75, 98}, {234, 237, 246}},
+    {Name = "Black",    Accent = {150, 160, 255},
+        {14, 15, 20}, {22, 24, 32}, {138, 144, 166}, {32, 35, 47}, {52, 56, 74}, {74, 80, 104}, {238, 240, 248}},
+    {Name = "Midnight", Accent = {96, 165, 250},
+        {11, 16, 28}, {17, 24, 41}, {132, 146, 178}, {26, 36, 59}, {43, 57, 90}, {64, 84, 128}, {230, 238, 252}},
+    {Name = "Graphite", Accent = {120, 200, 160},
+        {20, 20, 22}, {28, 28, 31}, {142, 142, 150}, {40, 40, 44}, {60, 60, 66}, {84, 84, 92}, {240, 240, 242}},
+    {Name = "Mocha",    Accent = {203, 166, 247},
+        {24, 24, 37}, {30, 30, 46}, {147, 153, 178}, {41, 41, 62}, {59, 60, 86}, {88, 91, 112}, {205, 214, 244}},
+    {Name = "Nord",     Accent = {136, 192, 208},
+        {36, 41, 51}, {46, 52, 64}, {143, 155, 180}, {59, 66, 82}, {76, 86, 106}, {97, 110, 136}, {236, 239, 244}},
+    {Name = "Rose",     Accent = {235, 111, 146},
+        {25, 23, 36}, {31, 29, 46}, {144, 140, 170}, {38, 35, 58}, {57, 53, 82}, {82, 79, 103}, {224, 222, 244}},
 }
-local THEME_NAMES = {"Black"}
-for _, theme in ipairs(themes) do
-    for i, rgb in ipairs(theme) do
-        theme[i] = Color3.fromRGB(rgb[1], rgb[2], rgb[3])
+local themeIndexByName = {}
+
+local function toColor(value)
+    if typeof(value) == "Color3" then return value end
+    if type(value) == "table" and tonumber(value[1]) and tonumber(value[2]) and tonumber(value[3]) then
+        return Color3.fromRGB(math.clamp(value[1], 0, 255), math.clamp(value[2], 0, 255), math.clamp(value[3], 0, 255))
+    end
+    return nil
+end
+
+local function buildThemeIndex()
+    table.clear(themeIndexByName)
+    for i, theme in ipairs(themes) do
+        themeIndexByName[string.lower(theme.Name)] = i
     end
 end
+
+for _, theme in ipairs(themes) do
+    for i = 1, THEME_SLOTS do theme[i] = toColor(theme[i]) end
+    theme.Accent = toColor(theme.Accent)
+end
+buildThemeIndex()
 
 palette = {}
 for i, color in ipairs(themes[1]) do palette[i] = color end
 white = palette[7]
 
-local accent = Color3.fromRGB(150, 160, 255)
+local accent = themes[1].Accent
 
 local function paint(object, index)
     object.BackgroundColor3 = palette[index]
@@ -857,7 +887,7 @@ local DRAG_THRESHOLD = 6
 local SUB_MAX_HEIGHT = 176
 
 local INTERNAL_FLAGS = {
-    Scale = true, Accent = true, AccentAlpha = true,
+    Scale = true, Accent = true, AccentAlpha = true, Theme = true,
     FadeAnimations = true, ScaleAnimations = true, Tab = true,
     ScrollBarThickness = true,
 }
@@ -871,8 +901,8 @@ local Library = {
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
-    Themes = table.freeze({table.freeze(table.clone(themes[1]))}),
-    ThemeNames = table.freeze({"Black"}),
+    Themes = themes,
+    ThemeNames = {},
     Font = UI_FONT,
     FontBold = UI_FONT_BOLD,
     FadeAnimations = true,
@@ -911,6 +941,8 @@ local Library = {
     },
     Window = nil,
 }
+
+for i, theme in ipairs(themes) do Library.ThemeNames[i] = theme.Name end
 
 local state = {
     Theme = 1,
@@ -1091,7 +1123,8 @@ function Library:SetRoundness(factor)
 end
 
 function Library:ResetAppearance()
-    self:SetAccent(Color3.fromRGB(150, 160, 255), 1)
+    local theme = themes[state.Theme] or themes[1]
+    self:SetAccent(theme.Accent, 1)
 end
 
 function Library:SetPerformanceOptions(opts)
@@ -1587,8 +1620,12 @@ function Library:CreateWindow(opts)
     if previous then previous:Destroy() end
 
     state.Theme = 1
+    if opts.Theme ~= nil then
+        local index = tonumber(opts.Theme) or themeIndexByName[string.lower(tostring(opts.Theme))]
+        if index and themes[index] then state.Theme = index end
+    end
     state.Scale = math.clamp(tonumber(opts.Scale) or 75, 20, 400)
-    state.Accent = typeof(opts.Accent) == "Color3" and opts.Accent or Color3.fromRGB(150, 160, 255)
+    state.Accent = typeof(opts.Accent) == "Color3" and opts.Accent or themes[state.Theme].Accent
     state.AccentAlpha = math.clamp(tonumber(opts.AccentAlpha) or 1, 0, 1)
     state.Tab = nil
     accent = state.Accent
@@ -2007,7 +2044,8 @@ function Library:CreateWindow(opts)
             Icon = menuSettings.Icon or {"settings", "settings-2", "sliders-horizontal"},
             Fallback = "S",
         })
-        local settingsPopup = createPopup(window, settingsButton, 190, 57, false)
+        local themeRowEnabled = menuSettings.Theme ~= false
+        local settingsPopup = createPopup(window, settingsButton, 190, themeRowEnabled and 118 or 57, false)
         local label = muted(settingsPopup.Object, "Menu scale", 10, 6, 170, 14, 11)
         local holder = transparent(settingsPopup.Object, 10, 26, 170, 25)
         local buttons = {}
@@ -2041,6 +2079,49 @@ function Library:CreateWindow(opts)
 
         window.RebuildScaleButtons = rebuildScaleButtons
         rebuildScaleButtons()
+
+        if themeRowEnabled then
+            local themeLabel = muted(settingsPopup.Object, "Theme", 10, 59, 170, 14, 11)
+            local themeHolder = transparent(settingsPopup.Object, 10, 79, 170, 32)
+            local themeButtons = {}
+            local SWATCH = 24
+            local function rebuildThemeButtons()
+                for _, button in ipairs(themeButtons) do button:Destroy() end
+                table.clear(themeButtons)
+                local count = #themes
+                local gap = 6
+                local perRow = math.max(1, math.floor((170 + gap) / (SWATCH + gap)))
+                for index, theme in ipairs(themes) do
+                    local col, row = (index - 1) % perRow, math.floor((index - 1) / perRow)
+                    local button = rect(themeHolder, col * (SWATCH + gap), row * (SWATCH + gap),
+                        SWATCH, SWATCH, theme[2], 6, "TextButton")
+                    button.Text = ""
+                    local stroke = new("UIStroke", button, {Color = theme[5], Thickness = 1, Transparency = 0.2})
+                    local dot = rect(button, 7, 7, 10, 10, theme.Accent, 5, "Frame")
+                    dot.Name = "Accent"
+                    local hovered = false
+                    connect(button.MouseEnter, function() hovered = true end)
+                    connect(button.MouseLeave, function() hovered = false end)
+                    connect(button.Activated, function() Library:SetTheme(index) end)
+                    step(function(_, k)
+                        local active = state.Theme == index
+                        local target = active and accent or (hovered and theme[6] or theme[5])
+                        stroke.Color = stroke.Color:Lerp(target, k)
+                        stroke.Thickness = active and 2 or 1
+                    end, button)
+                    themeButtons[#themeButtons + 1] = button
+                end
+                local rows = math.max(1, math.ceil(count / perRow))
+                local height = rows * SWATCH + (rows - 1) * gap
+                themeHolder.Size = UDim2.fromOffset(170, height)
+                settingsPopup.Height = 79 + height + 8
+                if not settingsPopup.AnimateHeight then settingsPopup.CurrentHeight = settingsPopup.Height end
+                themeLabel.Object.Visible = count > 0
+            end
+            window.RebuildThemeButtons = rebuildThemeButtons
+            rebuildThemeButtons()
+        end
+
         connect(settingsButton.Activated, function() settingsPopup:Toggle(settingsButton) end)
         window.MenuSettingsButton = settingsButton
         window.MenuSettingsPopup = settingsPopup
@@ -6909,14 +6990,82 @@ function Tab:AddCardSelector(opts) return self:AddCardGrid(opts) end
 function Window:AddSearch() return nil end
 function Library:AddSearch() return nil end
 function Library:GetSearch() return nil end
-function Library:AddTheme() return nil end
-function Library:SetTheme()
-    state.Theme, self.Theme = 1, 1
-    return "Black"
+local function resolveTheme(value)
+    if type(value) == "number" then
+        return themes[value] and value or nil
+    end
+    if type(value) == "string" then
+        return themeIndexByName[string.lower(value)]
+    end
+    return nil
 end
-function Library:GetTheme() return "Black", 1 end
-function Library:GetThemes() return {"Black"} end
-function Library:SetPaletteColor() return nil end
+
+function Library:GetThemes()
+    local names = {}
+    for i, theme in ipairs(themes) do names[i] = theme.Name end
+    return names
+end
+
+function Library:GetTheme()
+    local theme = themes[state.Theme] or themes[1]
+    return theme.Name, state.Theme
+end
+
+-- opts.KeepAccent keeps the current accent; by default the theme's accent is applied.
+function Library:SetTheme(value, opts)
+    local index = resolveTheme(value)
+    if not index then
+        warn("WolfUi: unknown theme " .. tostring(value))
+        return nil
+    end
+    opts = type(opts) == "table" and opts or {}
+    local theme = themes[index]
+    local changed = state.Theme ~= index
+    state.Theme, self.Theme = index, index
+    Runtime.ThemeDirty = true
+    if opts.KeepAccent ~= true then
+        self:SetAccent(theme.Accent)
+    end
+    if changed then fireChange("Theme", theme.Name) end
+    local window = self.Window
+    if window and window.RebuildThemeButtons then window.RebuildThemeButtons() end
+    return theme.Name
+end
+
+function Library:AddTheme(name, colors, accentColor)
+    assert(type(name) == "string" and name ~= "", "WolfUi: AddTheme expects a name")
+    assert(type(colors) == "table", "WolfUi: AddTheme expects a table of 7 colors")
+    local theme = {Name = name}
+    for i = 1, THEME_SLOTS do
+        local color = toColor(colors[i])
+        assert(color, "WolfUi: AddTheme palette slot " .. i .. " must be Color3 or {r, g, b}")
+        theme[i] = color
+    end
+    theme.Accent = toColor(accentColor or colors.Accent) or themes[1].Accent
+    local existing = themeIndexByName[string.lower(name)]
+    if existing then
+        themes[existing] = theme
+    else
+        themes[#themes + 1] = theme
+    end
+    buildThemeIndex()
+    self.ThemeNames = self:GetThemes()
+    local window = self.Window
+    if window and window.RebuildThemeButtons then window.RebuildThemeButtons() end
+    if existing == state.Theme then Runtime.ThemeDirty = true end
+    return theme
+end
+
+-- Overrides one slot of the active theme; the change transitions live.
+function Library:SetPaletteColor(index, color)
+    index = tonumber(index)
+    color = toColor(color)
+    if not index or index < 1 or index > THEME_SLOTS or not color then return nil end
+    local theme = themes[state.Theme]
+    theme[index] = color
+    Runtime.ThemeDirty = true
+    return color
+end
 
 function Tab:AddElements(items)
     assert(type(items) == "table", "WolfUi: AddElements expects a table")
@@ -7861,6 +8010,7 @@ function Library:GetConfig()
     if self.Configs and self.Configs.RestoreAccent == true then
         config.Accent = serialize(state.Accent)
         config.AccentAlpha = state.AccentAlpha
+        config.Theme = (themes[state.Theme] or themes[1]).Name
     end
     if self.Window then
         local wm = self.Window.WatermarkConfig
@@ -7955,8 +8105,13 @@ function Library:LoadConfig(config)
             end
         end
     end
-    if config.Accent and self.Configs and self.Configs.RestoreAccent == true then
-        self:SetAccent(deserialize(config.Accent), config.AccentAlpha)
+    if self.Configs and self.Configs.RestoreAccent == true then
+        if type(config.Theme) == "string" and themeIndexByName[string.lower(config.Theme)] then
+            self:SetTheme(config.Theme, {KeepAccent = true})
+        end
+        if config.Accent then
+            self:SetAccent(deserialize(config.Accent), config.AccentAlpha)
+        end
     end
     if config.Scale and self.Window then self.Window:SetScale(config.Scale, true) end
     if type(config.Mini) == "table" and self.Window then
