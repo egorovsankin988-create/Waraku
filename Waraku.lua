@@ -7344,21 +7344,163 @@ function V:Destroy(fromLibrary)
 	self.Destroyed = true
 end
 
-local WOLFUI_URL = "https://raw.githubusercontent.com/AWLOID/WolfUi/refs/heads/main/WolfUi.lua"
+-- BEGIN ZENIN ADAPTER
+local function adaptZenin(Native)
+    local adapter = {Flags = Native.Flags, Version = Native.Version or "Zenin", Capabilities = {ConditionalColors = true}}
+    local changes, unloads, aliases = {}, {}, {}
+    local window, nativeWindow
+    function adapter:GetElement(flag) return Native.Options[flag] end
+    function adapter:OnChange(callback) table.insert(changes, callback) end
+    function adapter:OnUnload(callback) table.insert(unloads, callback) end
+    function adapter:SetConfigAliases(value) aliases = value end
+    function adapter:Unload() if nativeWindow then nativeWindow:Destroy() end end
+    function adapter:SetToggleKey(key) nativeWindow:SetToggleKey(key) end
+    function adapter:SetTheme(theme) nativeWindow:SetTheme(theme == "Black" and "Dark" or theme) end
+    function adapter:SetAccent(color, alpha)
+        self.Accent, self.AccentAlpha = color, alpha or 1
+        nativeWindow:SetAccent(color, alpha)
+    end
+    function adapter:Notify(options)
+        local opts = table.clone(options)
+        opts.Content = opts.Content or opts.Text
+        return nativeWindow:Notify(opts)
+    end
+    function adapter:BindVisibility(element, flag)
+        local function update() element:SetVisible(self.Flags[flag] == true) end
+        update()
+        self:OnChange(function(changed) if changed == flag then update() end end)
+    end
+    adapter.NoSaveFlags = setmetatable({}, {__newindex = function(self, flag, value)
+        rawset(self, flag, value)
+        if nativeWindow and value then nativeWindow.Configs:Ignore(flag) end
+    end})
+    local wrapContainer
+    wrapContainer = function(native, isTab)
+        local container = {Native = native, Name = native.Name}
+        local section = isTab and nil or native
+        local function target()
+            if not section then section = native:AddSection({Name = "General", Side = "Left"}) end
+            return section
+        end
+        function container:AddSection(options)
+            if type(options) == "string" then options = {Name = options} end
+            if isTab then
+                section = native:AddSection(options)
+                return wrapContainer(section, false)
+            end
+            return target():AddLabel({Text = options.Name or options.Title})
+        end
+        for _, kind in ipairs({"Toggle", "Slider", "Dropdown", "ColorPicker", "Keybind", "Button", "Input", "Label"}) do
+            container["Add" .. kind] = function(_, options)
+                local opts = table.clone(options)
+                opts.Settings, opts.ColorPicker, opts.ColorPickers = nil, nil, nil
+                if kind == "Slider" and not opts.Step then opts.Step = 10 ^ -(opts.Decimals or 0) end
+                if kind == "Keybind" then opts.Mode = opts.Mode or "Press" end
+                if kind == "Label" then opts.Text = opts.Text or opts.Name end
+                local callback = opts.Callback
+                opts.Callback = function(value, ...)
+                    if callback then callback(value, ...) end
+                    if opts.Flag then
+                        for _, listener in ipairs(changes) do listener(opts.Flag, value) end
+                    end
+                end
+                local element = target()["Add" .. kind](target(), opts)
+                if options.Flag and adapter.NoSaveFlags[options.Flag] then nativeWindow.Configs:Ignore(options.Flag) end
+                if options.VisibleWhen then adapter:BindVisibility(element, options.VisibleWhen) end
+                if options.Settings or options.ColorPicker or options.ColorPickers then
+                    local settings = wrapContainer(element:AddSettings({Name = options.Settings and options.Settings.Name or options.Name}), false)
+                    if options.ColorPicker then settings:AddColorPicker(options.ColorPicker) end
+                    for _, color in ipairs(options.ColorPickers or {}) do settings:AddColorPicker(color) end
+                    if options.Settings and options.Settings.Build then options.Settings.Build(settings) end
+                end
+                return element
+            end
+        end
+        function container:AddParagraph(options)
+            local label = target():AddLabel({Text = options.Text or options.Name, Wrap = true})
+            local result = {}
+            function result:SetText(value) label:Set(value) end
+            function result:Set(value) label:Set(type(value) == "table" and (value.Text or value.Name) or value) end
+            return result
+        end
+        function container:AddConfigManager(options)
+            return self:AddButton({Name = options.Name or "Configs", Callback = function() nativeWindow:SelectConfigs() end})
+        end
+        function container:AddPlayerList(options) return adapter.AddPlayerList(self, options) end
+        return container
+    end
+    function adapter:CreateWindow(options)
+        nativeWindow = Native:CreateWindow({
+            Title = options.Title, GuiName = options.GuiName, Logo = "W", Theme = "Dark",
+            Accent = options.Accent, ToggleKey = Enum.KeyCode.RightShift,
+            ConfigFolder = "Waraku/Zenin", Configs = {AutoLoad = false},
+            Animation = true, CustomKeyboard = true, KeybindList = {Visible = true},
+            Watermark = {Title = "Waraku", Modes = {"FPS", "Ping"}},
+        })
+        local info = nativeWindow:AddSettingsSection({Name = "Waraku", Side = "Left"}):AddLabel({Text = "Waraku · Zenin UI"})
+        local state = info._win
+        window = {Native = nativeWindow, NativeState = state, Gui = state.Gui, Frame = state.Holder, Scale = state.Scale,
+            Viewport = workspace.CurrentCamera.ViewportSize, TabChanged = Instance.new("BindableEvent")}
+        self.Window, self.Accent, self.AccentAlpha = window, options.Accent, 1
+        nativeWindow:GiveTask(window.TabChanged)
+        nativeWindow:OnUnload(function()
+            window.Destroyed = true
+            for _, callback in ipairs(unloads) do callback() end
+        end)
+        function window:CreateTab(opts)
+            local tab = wrapContainer(nativeWindow:AddTab(opts), true)
+            tab.State = state.Tabs[#state.Tabs]
+            tab.Page = tab.State.Page
+            return tab
+        end
+        function window:SetWatermark(opts)
+            nativeWindow.Watermark:SetVisible(opts.Enabled ~= false)
+            nativeWindow.Watermark:SetTitle(opts.Text or "Waraku")
+            local modes = {}
+            if opts.ShowFPS then table.insert(modes, "FPS") end
+            if opts.ShowPing then table.insert(modes, "Ping") end
+            if opts.ShowTime then table.insert(modes, "Time") end
+            nativeWindow.Watermark:SetModes(modes)
+        end
+        local refreshNav = state.RefreshNav
+        state.RefreshNav = function(...)
+            refreshNav(...)
+            window.TabChanged:Fire(state.Nav.main)
+        end
+        -- Keep legacy aliases on every load, including the native config page.
+        local apply = nativeWindow.Configs.Apply
+        nativeWindow.Configs.Apply = function(first, second)
+            local data = first == nativeWindow.Configs and second or first
+            if type(data) == "table" and type(data.Flags) == "table" then
+                data = table.clone(data)
+                data.Flags = table.clone(data.Flags)
+                for flag, old in pairs(aliases) do
+                    if data.Flags[flag] == nil then data.Flags[flag] = data.Flags[old] end
+                end
+            end
+            return apply(data)
+        end
+        return window
+    end
+    return adapter
+end
+-- END ZENIN ADAPTER
+
+local ZENIN_URL = "https://raw.githubusercontent.com/egorovsankin988-create/Library/refs/heads/main/library.lua"
 local okLibrary, Lib = pcall(function()
     local source = type(env.WarakuLibrarySource) == "string" and env.WarakuLibrarySource or nil
     V.LibrarySource = source and "Injected" or "Remote"
     if not source and type(isfile) == "function" and type(readfile) == "function" then
-        local path = type(env.WarakuLibraryPath) == "string" and env.WarakuLibraryPath or "WolfUi.lua"
+        local path = type(env.WarakuLibraryPath) == "string" and env.WarakuLibraryPath or "library.lua"
         if isfile(path) then
             source = readfile(path)
-            if type(source) ~= "string" or source == "" then error("Empty WolfUi source: " .. path) end
+            if type(source) ~= "string" or source == "" then error("Empty Zenin source: " .. path) end
             V.LibrarySource = "Local: " .. path
         elseif type(env.WarakuLibraryPath) == "string" then
-            error("WolfUi file not found: " .. path)
+            error("Zenin file not found: " .. path)
         end
     end
-    if not source then source = game:HttpGet(WOLFUI_URL) end
+    if not source then source = game:HttpGet(ZENIN_URL) end
     local chunk, compileError = loadstring(source)
     if not chunk then error(compileError) end
     return chunk()
@@ -7366,8 +7508,9 @@ end)
 if not okLibrary or type(Lib) ~= "table" or type(Lib.CreateWindow) ~= "function" then
 	local libraryError = okLibrary and "invalid library response" or tostring(Lib)
 	V:Destroy()
-	error("WolfUi failed to load: " .. libraryError)
+	error("Zenin failed to load: " .. libraryError)
 end
+Lib = adaptZenin(Lib)
 V.LibraryVersion = Lib.Version
 V.PlayersListRevision = Lib.PlayersListRevision
 if Lib.SetConfigAliases then Lib:SetConfigAliases({["V.NameGradientColor1"]="V.NameColor"}) end
@@ -7730,7 +7873,7 @@ T:AddSection("General")
 
 do
     if type(W.CreateESPPreview) ~= "function" then
-        Lib:Notify({Title = "ESP preview", Text = "Update WolfUi.lua at the configured library URL to enable preview.", Duration = 8})
+        Lib:Notify({Title = "ESP preview", Text = "Zenin ESP preview is unavailable.", Duration = 8})
     else
         local context = {Role = "Murderer", Distance = 100, Health = 100, Lines = {}, Joints = {}, Screen = {}, Appearance = {},
             PreviewGlowFolder = nil, PreviewGlowParts = {}, PreviewGlowSource = nil,
@@ -13554,7 +13697,7 @@ local function initServerPlayers()
 
     -- BEGIN SERVER PLAYERS UI
     assert(type(PlayersTab.AddPlayerList) == "function",
-        "WolfUi has no player cards API. Load the matching WolfUi.lua from this archive.")
+        "Zenin player cards failed to initialize.")
     local playerList = PlayersTab:AddPlayerList({
         Name = "Players on server",
         Flag = "P.ServerPlayers",
@@ -14221,7 +14364,7 @@ local function initUtilities()
         if not voteNotice then
             if os.clock()<popupRetryAt then return end
             if type(Lib.NotifyCards)~="function" then
-                V.LastVotePopupError="Update WolfUi.lua to 5.9.3 for card notifications"
+                V.LastVotePopupError="Zenin card notifications are unavailable"
                 return
             end
             local ok,notice=pcall(function()
